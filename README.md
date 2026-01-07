@@ -1,4 +1,4 @@
-# alpine-vless
+# Alpine-vless
 
 单文件 Go 二进制：在 **Alpine Linux + OpenRC** 上自动部署 **最新 sing-box**，固定搭建 **VLESS + Reality**（单节点），并输出可一键导入的 `vless://` URL。
 
