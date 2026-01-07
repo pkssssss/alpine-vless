@@ -14,6 +14,7 @@ import (
 	"github.com/pkssssss/alpine-vless/internal/openrc"
 	"github.com/pkssssss/alpine-vless/internal/paths"
 	"github.com/pkssssss/alpine-vless/internal/singbox"
+	"github.com/pkssssss/alpine-vless/internal/bbr"
 	"github.com/pkssssss/alpine-vless/internal/system"
 )
 
@@ -157,5 +158,21 @@ func (a *App) Uninstall(ctx context.Context) error {
 	}
 
 	fmt.Fprintln(a.Out, "卸载完成，已移除服务与所有落地文件。")
+	return nil
+}
+
+func (a *App) EnableBBR(ctx context.Context) error {
+	res, err := bbr.Enable(ctx)
+	if err != nil {
+		return err
+	}
+
+	if res.AlreadyEnabled {
+		fmt.Fprintln(a.Out, "BBR 已处于开启状态。")
+	} else {
+		fmt.Fprintln(a.Out, "BBR 已开启并写入持久化配置。")
+	}
+	fmt.Fprintf(a.Out, "当前拥塞控制算法: %s\n", res.CongestionControl)
+	fmt.Fprintf(a.Out, "当前 default_qdisc: %s\n", res.DefaultQdisc)
 	return nil
 }

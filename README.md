@@ -27,6 +27,7 @@
 - 1.添加配置（重生成/覆盖）
 - 2.查看配置（输出一键导入 URL）
 - 3.删除配置（卸载/清空，需要输入“确认卸载”）
+- 4.一键开启 BBR（fq + bbr，需要输入“确认开启”）
 
 ## 目录与服务
 
@@ -60,4 +61,3 @@ go build -o alpine-vless ./cmd/alpine-vless
 ```sh
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ./dist/alpine-vless-linux-amd64 ./cmd/alpine-vless
 ```
-
