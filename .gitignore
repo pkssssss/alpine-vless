@@ -1,0 +1,9 @@
+.DS_Store
+alpine-reality-fixed.sh
+
+# build artifacts
+/dist/
+
+# runtime data (default)
+/alpine-vless-data/
+*.log
