@@ -13,6 +13,7 @@ type Handler interface {
 	Show(ctx context.Context) error
 	Uninstall(ctx context.Context) error
 	EnableBBR(ctx context.Context) error
+	UpdateSingBox(ctx context.Context) error
 }
 
 func Run(ctx context.Context, in *bufio.Reader, out, errOut io.Writer, h Handler) error {
@@ -22,6 +23,7 @@ func Run(ctx context.Context, in *bufio.Reader, out, errOut io.Writer, h Handler
 		fmt.Fprintln(out, "2) 查看配置（输出一键导入 URL）")
 		fmt.Fprintln(out, "3) 删除配置（卸载/清空）")
 		fmt.Fprintln(out, "4) 一键开启 BBR（fq + bbr）")
+		fmt.Fprintln(out, "5) 更新 sing-box 版本")
 		fmt.Fprintln(out, "0) 退出")
 		fmt.Fprint(out, "选择: ")
 
@@ -52,6 +54,13 @@ func Run(ctx context.Context, in *bufio.Reader, out, errOut io.Writer, h Handler
 				continue
 			}
 			if err := h.EnableBBR(ctx); err != nil {
+				fmt.Fprintln(errOut, "错误:", err.Error())
+			}
+		case "5":
+			if !confirmUpdateSingBox(in, out) {
+				continue
+			}
+			if err := h.UpdateSingBox(ctx); err != nil {
 				fmt.Fprintln(errOut, "错误:", err.Error())
 			}
 		case "0":
@@ -102,4 +111,14 @@ func confirmEnableBBR(in *bufio.Reader, out io.Writer) bool {
 	fmt.Fprintln(out, "风险评估：部分内核/机型不支持或与现有调参冲突，可能导致网络异常")
 	fmt.Fprintln(out)
 	return confirmYesOrNo(in, out, "已取消开启 BBR。")
+}
+
+func confirmUpdateSingBox(in *bufio.Reader, out io.Writer) bool {
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "⚠️ 危险操作检测！")
+	fmt.Fprintln(out, "操作类型：更新 sing-box 版本（下载并替换当前可执行文件）")
+	fmt.Fprintln(out, "影响范围：当前工具管理的 sing-box 程序与运行状态")
+	fmt.Fprintln(out, "风险评估：新版本可能存在兼容性变化，服务会重启")
+	fmt.Fprintln(out)
+	return confirmYesOrNo(in, out, "已取消更新 sing-box。")
 }
