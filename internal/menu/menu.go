@@ -62,6 +62,28 @@ func Run(ctx context.Context, in *bufio.Reader, out, errOut io.Writer, h Handler
 	}
 }
 
+func confirmYesOrNo(in *bufio.Reader, out io.Writer, cancelMsg string) bool {
+	for {
+		fmt.Fprint(out, "请确认是否继续？输入 yes 或 no: ")
+
+		line, err := in.ReadString('\n')
+		if err != nil {
+			fmt.Fprintln(out, "读取输入失败，已取消。")
+			return false
+		}
+
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "yes":
+			return true
+		case "no":
+			fmt.Fprintln(out, cancelMsg)
+			return false
+		default:
+			fmt.Fprintln(out, "输入无效，请输入 yes 或 no。")
+		}
+	}
+}
+
 func confirmUninstall(in *bufio.Reader, out io.Writer) bool {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "⚠️ 危险操作检测！")
@@ -69,18 +91,7 @@ func confirmUninstall(in *bufio.Reader, out io.Writer) bool {
 	fmt.Fprintln(out, "影响范围：当前工具管理的 sing-box 相关文件与服务")
 	fmt.Fprintln(out, "风险评估：卸载后代理不可用，需要重新运行并安装")
 	fmt.Fprintln(out)
-	fmt.Fprint(out, "请确认是否继续？输入“确认卸载”继续: ")
-
-	line, err := in.ReadString('\n')
-	if err != nil {
-		fmt.Fprintln(out, "读取输入失败，已取消。")
-		return false
-	}
-	if strings.TrimSpace(line) != "确认卸载" {
-		fmt.Fprintln(out, "已取消卸载。")
-		return false
-	}
-	return true
+	return confirmYesOrNo(in, out, "已取消卸载。")
 }
 
 func confirmEnableBBR(in *bufio.Reader, out io.Writer) bool {
@@ -90,16 +101,5 @@ func confirmEnableBBR(in *bufio.Reader, out io.Writer) bool {
 	fmt.Fprintln(out, "影响范围：系统网络栈全局参数（对所有 TCP 连接生效）")
 	fmt.Fprintln(out, "风险评估：部分内核/机型不支持或与现有调参冲突，可能导致网络异常")
 	fmt.Fprintln(out)
-	fmt.Fprint(out, "请确认是否继续？输入“确认开启”继续: ")
-
-	line, err := in.ReadString('\n')
-	if err != nil {
-		fmt.Fprintln(out, "读取输入失败，已取消。")
-		return false
-	}
-	if strings.TrimSpace(line) != "确认开启" {
-		fmt.Fprintln(out, "已取消开启 BBR。")
-		return false
-	}
-	return true
+	return confirmYesOrNo(in, out, "已取消开启 BBR。")
 }
