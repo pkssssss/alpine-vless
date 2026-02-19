@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pkssssss/alpine-vless/internal/system"
 )
@@ -19,6 +22,7 @@ type InstallSpec struct {
 	Version  string
 	Arch     string
 	DestPath string
+	Progress io.Writer
 }
 
 func Install(ctx context.Context, httpClient *http.Client, spec InstallSpec) error {
@@ -26,9 +30,10 @@ func Install(ctx context.Context, httpClient *http.Client, spec InstallSpec) err
 		return errors.New("安装参数不完整")
 	}
 
+	assetName := fmt.Sprintf("sing-box-%s-linux-%s.tar.gz", spec.Version, spec.Arch)
 	url := fmt.Sprintf(
-		"https://github.com/SagerNet/sing-box/releases/download/v%s/sing-box-%s-linux-%s.tar.gz",
-		spec.Version, spec.Version, spec.Arch,
+		"https://github.com/SagerNet/sing-box/releases/download/v%s/%s",
+		spec.Version, assetName,
 	)
 
 	tmp, err := os.CreateTemp("", "sing-box-*.tar.gz")
@@ -38,12 +43,33 @@ func Install(ctx context.Context, httpClient *http.Client, spec InstallSpec) err
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	if err := downloadToFile(ctx, httpClient, url, tmp); err != nil {
+	if spec.Progress != nil {
+		fmt.Fprintln(spec.Progress, "正在获取发布校验信息...")
+	}
+	expectedSHA256, err := releaseAssetSHA256(ctx, httpClient, spec.Version, assetName)
+	if err != nil {
+		return err
+	}
+	if spec.Progress != nil {
+		fmt.Fprintf(spec.Progress, "校验值: %s...\n", expectedSHA256[:12])
+	}
+
+	if err := downloadToFile(ctx, httpClient, url, tmp, spec.Progress); err != nil {
 		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		return err
+	}
+
+	if spec.Progress != nil {
+		fmt.Fprintln(spec.Progress, "正在校验下载文件完整性...")
+	}
+	if err := verifyFileSHA256(tmpPath, expectedSHA256); err != nil {
+		return err
+	}
+	if spec.Progress != nil {
+		fmt.Fprintln(spec.Progress, "完整性校验通过。")
 	}
 
 	if err := extractSingBoxBinary(tmpPath, spec.Version, spec.Arch, spec.DestPath); err != nil {
@@ -67,7 +93,7 @@ func DetectArch(goarch string) (string, error) {
 	}
 }
 
-func downloadToFile(ctx context.Context, httpClient *http.Client, url string, f *os.File) error {
+func downloadToFile(ctx context.Context, httpClient *http.Client, url string, f *os.File, progress io.Writer) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -84,8 +110,202 @@ func downloadToFile(ctx context.Context, httpClient *http.Client, url string, f 
 		return fmt.Errorf("下载失败: %s (HTTP %d)", url, resp.StatusCode)
 	}
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	buf := make([]byte, 32*1024)
+	var written int64
+	lastReport := time.Now()
+	lastPercent := int64(-1)
+
+	for {
+		n, rErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, err := f.Write(buf[:n]); err != nil {
+				return err
+			}
+			written += int64(n)
+
+			if progress != nil {
+				contentLength := resp.ContentLength
+				if contentLength > 0 {
+					percent := written * 100 / contentLength
+					if percent >= lastPercent+5 || time.Since(lastReport) >= 2*time.Second {
+						fmt.Fprintf(progress, "下载进度: %3d%% (%s / %s)\n", percent, formatBytes(written), formatBytes(contentLength))
+						lastPercent = percent
+						lastReport = time.Now()
+					}
+				} else if time.Since(lastReport) >= 2*time.Second {
+					fmt.Fprintf(progress, "下载进度: %s\n", formatBytes(written))
+					lastReport = time.Now()
+				}
+			}
+		}
+
+		if errors.Is(rErr, io.EOF) {
+			break
+		}
+		if rErr != nil {
+			return rErr
+		}
+	}
+
+	if progress != nil {
+		if resp.ContentLength > 0 {
+			fmt.Fprintf(progress, "下载进度: 100%% (%s / %s)\n", formatBytes(written), formatBytes(resp.ContentLength))
+		} else {
+			fmt.Fprintf(progress, "下载完成: %s\n", formatBytes(written))
+		}
+	}
+	return nil
+}
+
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for value := n / unit; value >= unit; value /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+func releaseAssetSHA256(ctx context.Context, httpClient *http.Client, version, assetName string) (string, error) {
+	assets, err := ReleaseAssetsByTag(ctx, httpClient, version)
+	if err != nil {
+		return "", err
+	}
+	checksumURL, err := findChecksumAssetURL(assets)
+	if err != nil {
+		return "", err
+	}
+	checksumText, err := fetchText(ctx, httpClient, checksumURL)
+	if err != nil {
+		return "", err
+	}
+	sha, err := parseSHA256FromChecksums(checksumText, assetName)
+	if err != nil {
+		return "", err
+	}
+	return sha, nil
+}
+
+func findChecksumAssetURL(assets []ReleaseAsset) (string, error) {
+	var fallback string
+	for _, a := range assets {
+		name := strings.ToLower(strings.TrimSpace(a.Name))
+		if name == "" || strings.TrimSpace(a.BrowserDownloadURL) == "" {
+			continue
+		}
+		if strings.Contains(name, "checksum") && strings.HasSuffix(name, ".txt") {
+			return a.BrowserDownloadURL, nil
+		}
+		if strings.Contains(name, "sha256") || strings.Contains(name, "checksum") {
+			fallback = a.BrowserDownloadURL
+		}
+	}
+	if fallback != "" {
+		return fallback, nil
+	}
+	return "", errors.New("未找到 release 校验文件（checksum/sha256）")
+}
+
+func fetchText(ctx context.Context, httpClient *http.Client, url string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "alpine-vless-installer")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", wrapHTTPDoError(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("下载失败: %s (HTTP %d)", url, resp.StatusCode)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func parseSHA256FromChecksums(content, assetName string) (string, error) {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if sha, ok := parseChecksumLine(line, assetName); ok {
+			return sha, nil
+		}
+	}
+	return "", fmt.Errorf("在校验文件中未找到目标资产的 SHA256: %s", assetName)
+}
+
+func parseChecksumLine(line, assetName string) (string, bool) {
+	upper := strings.ToUpper(line)
+	if strings.HasPrefix(upper, "SHA256 (") {
+		closing := strings.Index(line, ")")
+		eq := strings.LastIndex(line, "=")
+		if closing > 7 && eq > closing {
+			name := strings.TrimSpace(line[len("SHA256 ("):closing])
+			sha := strings.ToLower(strings.TrimSpace(line[eq+1:]))
+			if name == assetName && isSHA256Hex(sha) {
+				return sha, true
+			}
+		}
+	}
+
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return "", false
+	}
+	sha := strings.ToLower(fields[0])
+	if !isSHA256Hex(sha) {
+		return "", false
+	}
+	name := strings.TrimPrefix(fields[len(fields)-1], "*")
+	if name != assetName {
+		return "", false
+	}
+	return sha, true
+}
+
+func isSHA256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, ch := range s {
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func verifyFileSHA256(path, expected string) error {
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	if !isSHA256Hex(expected) {
+		return fmt.Errorf("非法 SHA256 值: %q", expected)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
 		return err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	actual := hex.EncodeToString(h.Sum(nil))
+	if actual != expected {
+		return fmt.Errorf("下载文件 SHA256 校验失败: expected=%s actual=%s", expected, actual)
 	}
 	return nil
 }

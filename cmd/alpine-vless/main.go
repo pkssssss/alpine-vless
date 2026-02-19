@@ -11,6 +11,9 @@ import (
 )
 
 func main() {
+	// Ignore SIGHUP so update tasks are less likely to be interrupted by SSH disconnect.
+	signal.Ignore(syscall.SIGHUP)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
