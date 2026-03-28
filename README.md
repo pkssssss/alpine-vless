@@ -15,6 +15,16 @@
 - root 权限
 - 可访问 GitHub（拉取 sing-box release）
 
+## 一键下载
+
+下载最新版本并赋予执行权限：
+
+```sh
+curl -L -o alpine-vless-linux-amd64 \
+  https://github.com/pkssssss/alpine-vless/releases/latest/download/alpine-vless-linux-amd64
+chmod +x alpine-vless-linux-amd64
+```
+
 ## 使用
 
 首次运行若未检测到配置，会自动安装并生成配置：
