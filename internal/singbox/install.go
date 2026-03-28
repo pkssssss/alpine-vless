@@ -30,11 +30,14 @@ func Install(ctx context.Context, httpClient *http.Client, spec InstallSpec) err
 		return errors.New("安装参数不完整")
 	}
 
-	assetName := fmt.Sprintf("sing-box-%s-linux-%s.tar.gz", spec.Version, spec.Arch)
-	url := fmt.Sprintf(
-		"https://github.com/SagerNet/sing-box/releases/download/v%s/%s",
-		spec.Version, assetName,
-	)
+	assets, err := ReleaseAssetsByTag(ctx, httpClient, spec.Version)
+	if err != nil {
+		return err
+	}
+	asset, err := selectLinuxAsset(assets, spec.Version, spec.Arch)
+	if err != nil {
+		return err
+	}
 
 	tmp, err := os.CreateTemp("", "sing-box-*.tar.gz")
 	if err != nil {
@@ -46,7 +49,7 @@ func Install(ctx context.Context, httpClient *http.Client, spec InstallSpec) err
 	if spec.Progress != nil {
 		fmt.Fprintln(spec.Progress, "正在获取发布校验信息...")
 	}
-	expectedSHA256, err := releaseAssetSHA256(ctx, httpClient, spec.Version, assetName)
+	expectedSHA256, err := releaseAssetSHA256FromAssets(ctx, httpClient, assets, asset.Name)
 	if err != nil {
 		return err
 	}
@@ -54,7 +57,7 @@ func Install(ctx context.Context, httpClient *http.Client, spec InstallSpec) err
 		fmt.Fprintf(spec.Progress, "校验值: %s...\n", expectedSHA256[:12])
 	}
 
-	if err := downloadToFile(ctx, httpClient, url, tmp, spec.Progress); err != nil {
+	if err := downloadToFile(ctx, httpClient, asset.BrowserDownloadURL, tmp, spec.Progress); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -72,7 +75,7 @@ func Install(ctx context.Context, httpClient *http.Client, spec InstallSpec) err
 		fmt.Fprintln(spec.Progress, "完整性校验通过。")
 	}
 
-	if err := extractSingBoxBinary(tmpPath, spec.Version, spec.Arch, spec.DestPath); err != nil {
+	if err := extractSingBoxBinary(tmpPath, asset.Name, spec.DestPath); err != nil {
 		return err
 	}
 	return nil
@@ -175,6 +178,10 @@ func releaseAssetSHA256(ctx context.Context, httpClient *http.Client, version, a
 	if err != nil {
 		return "", err
 	}
+	return releaseAssetSHA256FromAssets(ctx, httpClient, assets, assetName)
+}
+
+func releaseAssetSHA256FromAssets(ctx context.Context, httpClient *http.Client, assets []ReleaseAsset, assetName string) (string, error) {
 	if sha, ok := assetDigestSHA256(assets, assetName); ok {
 		return sha, nil
 	}
@@ -191,6 +198,27 @@ func releaseAssetSHA256(ctx context.Context, httpClient *http.Client, version, a
 		return "", err
 	}
 	return sha, nil
+}
+
+func selectLinuxAsset(assets []ReleaseAsset, version, arch string) (ReleaseAsset, error) {
+	candidates := []string{
+		fmt.Sprintf("sing-box-%s-linux-%s-musl.tar.gz", version, arch),
+		fmt.Sprintf("sing-box-%s-linux-%s.tar.gz", version, arch),
+	}
+
+	for _, candidate := range candidates {
+		for _, asset := range assets {
+			if strings.TrimSpace(asset.Name) != candidate {
+				continue
+			}
+			if strings.TrimSpace(asset.BrowserDownloadURL) == "" {
+				continue
+			}
+			return asset, nil
+		}
+	}
+
+	return ReleaseAsset{}, fmt.Errorf("未找到适用于当前 Alpine 环境的 sing-box 资产（version=%s arch=%s）", version, arch)
 }
 
 func assetDigestSHA256(assets []ReleaseAsset, assetName string) (string, bool) {
@@ -347,7 +375,7 @@ func verifyFileSHA256(path, expected string) error {
 	return nil
 }
 
-func extractSingBoxBinary(tarGzPath, version, arch, destPath string) error {
+func extractSingBoxBinary(tarGzPath, assetName, destPath string) error {
 	f, err := os.Open(tarGzPath)
 	if err != nil {
 		return err
@@ -361,7 +389,11 @@ func extractSingBoxBinary(tarGzPath, version, arch, destPath string) error {
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
-	wantSuffix := fmt.Sprintf("sing-box-%s-linux-%s/sing-box", version, arch)
+	archiveRoot := strings.TrimSuffix(strings.TrimSpace(assetName), ".tar.gz")
+	if archiveRoot == "" || archiveRoot == assetName {
+		return fmt.Errorf("非法 sing-box 资产名: %s", assetName)
+	}
+	wantSuffix := archiveRoot + "/sing-box"
 
 	destDir := filepath.Dir(destPath)
 	if err := system.MkdirAll0755(destDir); err != nil {
