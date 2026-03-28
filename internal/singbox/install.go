@@ -175,6 +175,9 @@ func releaseAssetSHA256(ctx context.Context, httpClient *http.Client, version, a
 	if err != nil {
 		return "", err
 	}
+	if sha, ok := assetDigestSHA256(assets, assetName); ok {
+		return sha, nil
+	}
 	checksumURL, err := findChecksumAssetURL(assets)
 	if err != nil {
 		return "", err
@@ -188,6 +191,40 @@ func releaseAssetSHA256(ctx context.Context, httpClient *http.Client, version, a
 		return "", err
 	}
 	return sha, nil
+}
+
+func assetDigestSHA256(assets []ReleaseAsset, assetName string) (string, bool) {
+	for _, a := range assets {
+		if strings.TrimSpace(a.Name) != assetName {
+			continue
+		}
+		sha, ok := parseAssetDigestSHA256(a.Digest)
+		if ok {
+			return sha, true
+		}
+	}
+	return "", false
+}
+
+func parseAssetDigestSHA256(digest string) (string, bool) {
+	digest = strings.TrimSpace(digest)
+	if digest == "" {
+		return "", false
+	}
+
+	if strings.Contains(digest, ":") {
+		parts := strings.SplitN(digest, ":", 2)
+		if len(parts) != 2 || !strings.EqualFold(strings.TrimSpace(parts[0]), "sha256") {
+			return "", false
+		}
+		digest = strings.TrimSpace(parts[1])
+	}
+
+	digest = strings.ToLower(digest)
+	if !isSHA256Hex(digest) {
+		return "", false
+	}
+	return digest, true
 }
 
 func findChecksumAssetURL(assets []ReleaseAsset) (string, error) {

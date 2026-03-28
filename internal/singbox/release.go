@@ -15,6 +15,7 @@ const githubReleaseAPIBase = "https://api.github.com/repos/SagerNet/sing-box"
 
 type ReleaseAsset struct {
 	Name               string `json:"name"`
+	Digest             string `json:"digest"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
