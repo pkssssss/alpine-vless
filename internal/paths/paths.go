@@ -10,9 +10,10 @@ import (
 type Paths struct {
 	RootDir string
 
-	SingBoxPath string
-	ConfigPath  string
-	LogPath     string
+	SingBoxPath   string
+	ConfigPath    string
+	LogPath       string
+	UpdateLogPath string
 
 	OpenRCOutLogPath string
 	OpenRCErrLogPath string
@@ -34,9 +35,10 @@ func Discover() (Paths, error) {
 		return Paths{
 			RootDir: rootDir,
 
-			SingBoxPath: filepath.Join(rootDir, "sing-box"),
-			ConfigPath:  filepath.Join(rootDir, "config.json"),
-			LogPath:     filepath.Join(rootDir, "sing-box.log"),
+			SingBoxPath:   filepath.Join(rootDir, "sing-box"),
+			ConfigPath:    filepath.Join(rootDir, "config.json"),
+			LogPath:       filepath.Join(rootDir, "sing-box.log"),
+			UpdateLogPath: filepath.Join(rootDir, "update.log"),
 
 			OpenRCOutLogPath: filepath.Join(rootDir, "openrc.out.log"),
 			OpenRCErrLogPath: filepath.Join(rootDir, "openrc.err.log"),
@@ -60,9 +62,10 @@ func Discover() (Paths, error) {
 	return Paths{
 		RootDir: rootDir,
 
-		SingBoxPath: filepath.Join(rootDir, "sing-box"),
-		ConfigPath:  filepath.Join(rootDir, "config.json"),
-		LogPath:     filepath.Join(rootDir, "sing-box.log"),
+		SingBoxPath:   filepath.Join(rootDir, "sing-box"),
+		ConfigPath:    filepath.Join(rootDir, "config.json"),
+		LogPath:       filepath.Join(rootDir, "sing-box.log"),
+		UpdateLogPath: filepath.Join(rootDir, "update.log"),
 
 		OpenRCOutLogPath: filepath.Join(rootDir, "openrc.out.log"),
 		OpenRCErrLogPath: filepath.Join(rootDir, "openrc.err.log"),

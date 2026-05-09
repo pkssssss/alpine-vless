@@ -9,10 +9,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pkssssss/alpine-vless/internal/bbr"
@@ -28,36 +30,27 @@ type App struct {
 	Out   io.Writer
 	Err   io.Writer
 
-	httpClient *http.Client
+	httpClient        *http.Client
+	startUpdateWorker func(updateWorkerSpec) (int, error)
 }
 
-const downloadTimeout = 15 * time.Minute
+const (
+	downloadTimeout = 15 * time.Minute
+	UpdateWorkerArg = "--update-sing-box-worker"
+)
+
+type updateWorkerSpec struct {
+	ExePath string
+	LogPath string
+}
 
 func Run(ctx context.Context, in io.Reader, out, errOut io.Writer) error {
-	if runtime.GOOS != "linux" {
-		return errors.New("仅支持在 Linux（Alpine）运行")
-	}
-	if !system.IsRoot() {
-		return errors.New("需要 root 权限运行")
-	}
-	if !system.IsAlpine() {
-		return errors.New("仅支持 Alpine Linux")
-	}
-	if !system.CommandExists("rc-service") || !system.CommandExists("rc-update") {
-		return errors.New("未检测到 OpenRC（缺少 rc-service/rc-update）")
-	}
-
-	p, err := paths.Discover()
+	p, err := discoverRuntimePaths()
 	if err != nil {
 		return err
 	}
 
-	a := &App{
-		Paths:      p,
-		Out:        out,
-		Err:        errOut,
-		httpClient: newHTTPClient(),
-	}
+	a := newApp(p, out, errOut)
 
 	if !system.FileExists(a.Paths.ConfigPath) {
 		fmt.Fprintln(a.Out, "未检测到已部署实例，开始自动安装并生成配置...")
@@ -69,6 +62,45 @@ func Run(ctx context.Context, in io.Reader, out, errOut io.Writer) error {
 	}
 
 	return menu.Run(ctx, bufio.NewReader(in), out, errOut, a)
+}
+
+func RunUpdateSingBoxWorker(ctx context.Context, out, errOut io.Writer) error {
+	p, err := discoverRuntimePaths()
+	if err != nil {
+		return err
+	}
+	return newApp(p, out, errOut).updateSingBoxForeground(ctx)
+}
+
+func discoverRuntimePaths() (paths.Paths, error) {
+	if runtime.GOOS != "linux" {
+		return paths.Paths{}, errors.New("仅支持在 Linux（Alpine）运行")
+	}
+	if !system.IsRoot() {
+		return paths.Paths{}, errors.New("需要 root 权限运行")
+	}
+	if !system.IsAlpine() {
+		return paths.Paths{}, errors.New("仅支持 Alpine Linux")
+	}
+	if !system.CommandExists("rc-service") || !system.CommandExists("rc-update") {
+		return paths.Paths{}, errors.New("未检测到 OpenRC（缺少 rc-service/rc-update）")
+	}
+
+	p, err := paths.Discover()
+	if err != nil {
+		return paths.Paths{}, err
+	}
+	return p, nil
+}
+
+func newApp(p paths.Paths, out, errOut io.Writer) *App {
+	return &App{
+		Paths:             p,
+		Out:               out,
+		Err:               errOut,
+		httpClient:        newHTTPClient(),
+		startUpdateWorker: startUpdateWorkerProcess,
+	}
 }
 
 func (a *App) IsInstalled() bool {
@@ -166,16 +198,36 @@ func (a *App) EnableBBR(ctx context.Context) error {
 }
 
 func (a *App) UpdateSingBox(ctx context.Context) error {
-	if !system.FileExists(a.Paths.ConfigPath) {
-		return errors.New("未检测到已部署配置，请先执行“添加配置（重生成/覆盖）”")
+	if err := a.validateUpdateReady(); err != nil {
+		return err
 	}
-	if !system.FileExists(a.Paths.SingBoxPath) {
-		return errors.New("未检测到当前 sing-box 可执行文件，请先执行“添加配置（重生成/覆盖）”")
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取当前程序路径失败: %w", err)
 	}
-	if !openrc.IsManagedServiceFile(a.Paths.ServiceFile) {
-		return errors.New("未检测到本工具管理的 OpenRC 服务，请先执行“添加配置（重生成/覆盖）”")
+
+	start := a.startUpdateWorker
+	if start == nil {
+		start = startUpdateWorkerProcess
 	}
-	if err := system.MkdirAll0700(a.Paths.RootDir); err != nil {
+	pid, err := start(updateWorkerSpec{
+		ExePath: exePath,
+		LogPath: a.Paths.UpdateLogPath,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(a.Out, "后台更新已启动。")
+	fmt.Fprintf(a.Out, "PID: %d\n", pid)
+	fmt.Fprintf(a.Out, "日志文件: %s\n", a.Paths.UpdateLogPath)
+	fmt.Fprintln(a.Out, "代理重启期间当前连接可能断开；等待 10-30 秒后重新连接，并查看日志确认结果。")
+	return nil
+}
+
+func (a *App) updateSingBoxForeground(ctx context.Context) error {
+	if err := a.validateUpdateReady(); err != nil {
 		return err
 	}
 
@@ -265,6 +317,22 @@ func (a *App) UpdateSingBox(ctx context.Context) error {
 	return nil
 }
 
+func (a *App) validateUpdateReady() error {
+	if !system.FileExists(a.Paths.ConfigPath) {
+		return errors.New("未检测到已部署配置，请先执行“添加配置（重生成/覆盖）”")
+	}
+	if !system.FileExists(a.Paths.SingBoxPath) {
+		return errors.New("未检测到当前 sing-box 可执行文件，请先执行“添加配置（重生成/覆盖）”")
+	}
+	if !openrc.IsManagedServiceFile(a.Paths.ServiceFile) {
+		return errors.New("未检测到本工具管理的 OpenRC 服务，请先执行“添加配置（重生成/覆盖）”")
+	}
+	if err := system.MkdirAll0700(a.Paths.RootDir); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (a *App) installLatestSingBox(ctx context.Context) (string, error) {
 	return a.installLatestSingBoxTo(ctx, a.Paths.SingBoxPath)
 }
@@ -321,6 +389,57 @@ func newHTTPClient() *http.Client {
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 	}
+}
+
+func startUpdateWorkerProcess(spec updateWorkerSpec) (int, error) {
+	cmd, cleanup, err := newUpdateWorkerCommand(spec)
+	if err != nil {
+		return 0, err
+	}
+	defer cleanup()
+
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("启动后台更新任务失败: %w", err)
+	}
+	pid := cmd.Process.Pid
+	if err := cmd.Process.Release(); err != nil {
+		return 0, fmt.Errorf("释放后台更新任务失败: %w", err)
+	}
+	return pid, nil
+}
+
+func newUpdateWorkerCommand(spec updateWorkerSpec) (*exec.Cmd, func(), error) {
+	if strings.TrimSpace(spec.ExePath) == "" {
+		return nil, nil, errors.New("后台更新任务缺少程序路径")
+	}
+	if strings.TrimSpace(spec.LogPath) == "" {
+		return nil, nil, errors.New("后台更新任务缺少日志路径")
+	}
+	if err := system.MkdirAll0700(filepath.Dir(spec.LogPath)); err != nil {
+		return nil, nil, err
+	}
+
+	logFile, err := os.OpenFile(spec.LogPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("打开更新日志失败: %w", err)
+	}
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		_ = logFile.Close()
+		return nil, nil, fmt.Errorf("打开空输入失败: %w", err)
+	}
+
+	cleanup := func() {
+		_ = devNull.Close()
+		_ = logFile.Close()
+	}
+
+	cmd := exec.Command(spec.ExePath, UpdateWorkerArg)
+	cmd.Stdin = devNull
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd, cleanup, nil
 }
 
 func swapBinaryForUpdate(newPath, destPath, backupPath string) error {

@@ -23,7 +23,7 @@ func Run(ctx context.Context, in *bufio.Reader, out, errOut io.Writer, h Handler
 		fmt.Fprintln(out, "2) 查看配置（输出一键导入 URL）")
 		fmt.Fprintln(out, "3) 删除配置（卸载/清空）")
 		fmt.Fprintln(out, "4) 一键开启 BBR（fq + bbr）")
-		fmt.Fprintln(out, "5) 更新 sing-box 版本")
+		fmt.Fprintln(out, "5) 更新 sing-box 版本（后台）")
 		fmt.Fprintln(out, "0) 退出")
 		fmt.Fprint(out, "选择: ")
 
@@ -116,7 +116,7 @@ func confirmEnableBBR(in *bufio.Reader, out io.Writer) bool {
 func confirmUpdateSingBox(in *bufio.Reader, out io.Writer) bool {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "⚠️ 危险操作检测！")
-	fmt.Fprintln(out, "操作类型：更新 sing-box 版本（下载并替换当前可执行文件）")
+	fmt.Fprintln(out, "操作类型：启动后台更新任务（下载并替换当前可执行文件）")
 	fmt.Fprintln(out, "影响范围：当前工具管理的 sing-box 程序与运行状态")
 	fmt.Fprintln(out, "风险评估：新版本可能存在兼容性变化，服务会重启")
 	fmt.Fprintln(out, "连接提醒：如果当前远程连接依赖本节点，重启期间会断开；建议使用服务商控制台或不依赖本节点的 SSH 执行")
