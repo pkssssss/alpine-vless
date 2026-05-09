@@ -32,11 +32,15 @@ type App struct {
 
 	httpClient        *http.Client
 	startUpdateWorker func(updateWorkerSpec) (int, error)
+	followUpdateLog   func(context.Context, string, io.Writer) error
 }
 
 const (
-	downloadTimeout = 15 * time.Minute
-	UpdateWorkerArg = "--update-sing-box-worker"
+	downloadTimeout        = 15 * time.Minute
+	updateLogFollowTimeout = 20 * time.Minute
+	updateLogPollInterval  = 500 * time.Millisecond
+	updateLogTailLines     = 40
+	UpdateWorkerArg        = "--update-sing-box-worker"
 )
 
 type updateWorkerSpec struct {
@@ -100,6 +104,7 @@ func newApp(p paths.Paths, out, errOut io.Writer) *App {
 		Err:               errOut,
 		httpClient:        newHTTPClient(),
 		startUpdateWorker: startUpdateWorkerProcess,
+		followUpdateLog:   followUpdateLogUntilDone,
 	}
 }
 
@@ -222,7 +227,53 @@ func (a *App) UpdateSingBox(ctx context.Context) error {
 	fmt.Fprintln(a.Out, "后台更新已启动。")
 	fmt.Fprintf(a.Out, "PID: %d\n", pid)
 	fmt.Fprintf(a.Out, "日志文件: %s\n", a.Paths.UpdateLogPath)
-	fmt.Fprintln(a.Out, "代理重启期间当前连接可能断开；等待 10-30 秒后重新连接，并查看日志确认结果。")
+	fmt.Fprintln(a.Out, "正在自动输出更新日志，按 Ctrl+C 可停止查看，后台更新不受影响。")
+	fmt.Fprintln(a.Out, "代理重启期间当前连接可能断开；若断开，等待 10-30 秒后重新连接并选择 6 查看结果。")
+
+	follow := a.followUpdateLog
+	if follow == nil {
+		follow = followUpdateLogUntilDone
+	}
+	if err := follow(ctx, a.Paths.UpdateLogPath, a.Out); err != nil && ctx.Err() == nil {
+		fmt.Fprintf(a.Err, "警告: 自动输出更新日志中止：%v\n", err)
+	}
+	return nil
+}
+
+func (a *App) ShowUpdateStatus(ctx context.Context) error {
+	fmt.Fprintf(a.Out, "日志文件: %s\n", a.Paths.UpdateLogPath)
+
+	lockPath := filepath.Join(a.Paths.RootDir, ".update.lock")
+	if pid := readLockPID(lockPath); pid > 0 && processExists(pid) {
+		fmt.Fprintln(a.Out, "更新状态: 后台更新进行中")
+		fmt.Fprintf(a.Out, "PID: %d\n", pid)
+	} else {
+		status, err := updateStatusFromLog(a.Paths.UpdateLogPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				fmt.Fprintln(a.Out, "更新状态: 暂无更新日志")
+				return nil
+			}
+			return err
+		}
+		fmt.Fprintf(a.Out, "更新状态: %s\n", status)
+	}
+
+	if version, err := singbox.BinaryVersion(ctx, a.Paths.SingBoxPath); err == nil {
+		fmt.Fprintf(a.Out, "当前版本: %s\n", displayVersion(version))
+	}
+
+	logText, err := os.ReadFile(a.Paths.UpdateLogPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	fmt.Fprintln(a.Out, "最近日志:")
+	for _, line := range lastLogLines(string(logText), updateLogTailLines) {
+		fmt.Fprintln(a.Out, line)
+	}
 	return nil
 }
 
@@ -440,6 +491,77 @@ func newUpdateWorkerCommand(spec updateWorkerSpec) (*exec.Cmd, func(), error) {
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd, cleanup, nil
+}
+
+func followUpdateLogUntilDone(ctx context.Context, logPath string, out io.Writer) error {
+	deadline := time.NewTimer(updateLogFollowTimeout)
+	defer deadline.Stop()
+
+	var offset int
+	for {
+		b, err := os.ReadFile(logPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if len(b) > offset {
+			if _, err := out.Write(b[offset:]); err != nil {
+				return err
+			}
+			offset = len(b)
+		}
+		if updateLogReachedTerminalState(string(b)) {
+			status, _ := updateStatusFromLog(logPath)
+			if status != "" {
+				fmt.Fprintf(out, "更新状态: %s\n", status)
+			}
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errors.New("等待更新日志完成超时，可稍后选择 6 查看结果")
+		case <-time.After(updateLogPollInterval):
+		}
+	}
+}
+
+func updateStatusFromLog(logPath string) (string, error) {
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		return "", err
+	}
+	text := string(b)
+	switch {
+	case strings.Contains(text, "当前已是最新版本，无需更新。"):
+		return "已完成，无需更新", nil
+	case strings.Contains(text, "sing-box 已更新并重启完成。"):
+		return "已完成，服务已重启", nil
+	case strings.Contains(text, "错误:"):
+		return "失败，请查看日志", nil
+	case strings.TrimSpace(text) == "":
+		return "后台更新刚启动，暂无日志", nil
+	default:
+		return "未完成或状态未知，请查看日志", nil
+	}
+}
+
+func updateLogReachedTerminalState(text string) bool {
+	return strings.Contains(text, "当前已是最新版本，无需更新。") ||
+		strings.Contains(text, "sing-box 已更新并重启完成。") ||
+		strings.Contains(text, "错误:")
+}
+
+func lastLogLines(text string, maxLines int) []string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	if maxLines <= 0 || len(lines) <= maxLines {
+		return lines
+	}
+	return lines[len(lines)-maxLines:]
 }
 
 func swapBinaryForUpdate(newPath, destPath, backupPath string) error {

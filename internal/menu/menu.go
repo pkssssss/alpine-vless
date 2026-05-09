@@ -14,6 +14,7 @@ type Handler interface {
 	Uninstall(ctx context.Context) error
 	EnableBBR(ctx context.Context) error
 	UpdateSingBox(ctx context.Context) error
+	ShowUpdateStatus(ctx context.Context) error
 }
 
 func Run(ctx context.Context, in *bufio.Reader, out, errOut io.Writer, h Handler) error {
@@ -24,6 +25,7 @@ func Run(ctx context.Context, in *bufio.Reader, out, errOut io.Writer, h Handler
 		fmt.Fprintln(out, "3) 删除配置（卸载/清空）")
 		fmt.Fprintln(out, "4) 一键开启 BBR（fq + bbr）")
 		fmt.Fprintln(out, "5) 更新 sing-box 版本（后台）")
+		fmt.Fprintln(out, "6) 查看更新状态/日志")
 		fmt.Fprintln(out, "0) 退出")
 		fmt.Fprint(out, "选择: ")
 
@@ -61,6 +63,10 @@ func Run(ctx context.Context, in *bufio.Reader, out, errOut io.Writer, h Handler
 				continue
 			}
 			if err := h.UpdateSingBox(ctx); err != nil {
+				fmt.Fprintln(errOut, "错误:", err.Error())
+			}
+		case "6":
+			if err := h.ShowUpdateStatus(ctx); err != nil {
 				fmt.Fprintln(errOut, "错误:", err.Error())
 			}
 		case "0":

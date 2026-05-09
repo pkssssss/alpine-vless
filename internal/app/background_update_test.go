@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,7 @@ func TestUpdateSingBoxStartsBackgroundWorker(t *testing.T) {
 	p := updateTestPaths(t)
 	var out bytes.Buffer
 	started := false
+	followed := false
 	a := &App{
 		Paths: p,
 		Out:   &out,
@@ -27,6 +30,14 @@ func TestUpdateSingBoxStartsBackgroundWorker(t *testing.T) {
 			}
 			return 1234, nil
 		},
+		followUpdateLog: func(ctx context.Context, logPath string, out io.Writer) error {
+			followed = true
+			if logPath != p.UpdateLogPath {
+				t.Fatalf("expected followed log path %q, got %q", p.UpdateLogPath, logPath)
+			}
+			_, _ = fmt.Fprintln(out, "当前已是最新版本，无需更新。")
+			return nil
+		},
 	}
 
 	if err := a.UpdateSingBox(context.Background()); err != nil {
@@ -36,15 +47,50 @@ func TestUpdateSingBoxStartsBackgroundWorker(t *testing.T) {
 	if !started {
 		t.Fatal("expected background worker to be started")
 	}
+	if !followed {
+		t.Fatal("expected update log to be followed")
+	}
 	got := out.String()
 	for _, want := range []string{
 		"后台更新已启动",
 		"PID: 1234",
 		p.UpdateLogPath,
+		"正在自动输出更新日志",
+		"当前已是最新版本，无需更新。",
 		"代理重启期间当前连接可能断开",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected output to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+func TestShowUpdateStatusPrintsLogSummary(t *testing.T) {
+	t.Parallel()
+
+	p := updateTestPaths(t)
+	if err := os.WriteFile(p.UpdateLogPath, []byte("开始更新 sing-box...\n当前版本: v1.13.11\n最新版本: v1.13.11\n当前已是最新版本，无需更新。\n"), 0600); err != nil {
+		t.Fatalf("write update log: %v", err)
+	}
+
+	var out bytes.Buffer
+	a := &App{
+		Paths: p,
+		Out:   &out,
+	}
+
+	if err := a.ShowUpdateStatus(context.Background()); err != nil {
+		t.Fatalf("expected status success, got %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"更新状态: 已完成，无需更新",
+		"日志文件: " + p.UpdateLogPath,
+		"当前已是最新版本，无需更新。",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected status output to contain %q, got:\n%s", want, got)
 		}
 	}
 }

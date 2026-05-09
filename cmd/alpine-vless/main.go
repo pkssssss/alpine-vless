@@ -19,7 +19,7 @@ func main() {
 
 	if len(os.Args) == 2 && os.Args[1] == app.UpdateWorkerArg {
 		if err := app.RunUpdateSingBoxWorker(ctx, os.Stdout, os.Stderr); err != nil {
-			fmt.Fprintln(os.Stderr, err.Error())
+			fmt.Fprintln(os.Stderr, "错误:", err.Error())
 			os.Exit(1)
 		}
 		return
