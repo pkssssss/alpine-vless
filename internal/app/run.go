@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,6 +31,8 @@ type App struct {
 	httpClient *http.Client
 }
 
+const downloadTimeout = 15 * time.Minute
+
 func Run(ctx context.Context, in io.Reader, out, errOut io.Writer) error {
 	if runtime.GOOS != "linux" {
 		return errors.New("仅支持在 Linux（Alpine）运行")
@@ -50,12 +53,10 @@ func Run(ctx context.Context, in io.Reader, out, errOut io.Writer) error {
 	}
 
 	a := &App{
-		Paths: p,
-		Out:   out,
-		Err:   errOut,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		Paths:      p,
+		Out:        out,
+		Err:        errOut,
+		httpClient: newHTTPClient(),
 	}
 
 	if !system.FileExists(a.Paths.ConfigPath) {
@@ -293,12 +294,33 @@ func (a *App) installSingBoxVersionTo(ctx context.Context, version, destPath str
 		return err
 	}
 
-	return singbox.Install(ctx, a.httpClient, singbox.InstallSpec{
+	downloadCtx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	defer cancel()
+
+	return singbox.Install(downloadCtx, a.httpClient, singbox.InstallSpec{
 		Version:  version,
 		Arch:     arch,
 		DestPath: destPath,
 		Progress: a.Out,
 	})
+}
+
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          10,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   30 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
 }
 
 func swapBinaryForUpdate(newPath, destPath, backupPath string) error {

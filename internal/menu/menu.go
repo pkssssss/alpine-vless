@@ -119,6 +119,7 @@ func confirmUpdateSingBox(in *bufio.Reader, out io.Writer) bool {
 	fmt.Fprintln(out, "操作类型：更新 sing-box 版本（下载并替换当前可执行文件）")
 	fmt.Fprintln(out, "影响范围：当前工具管理的 sing-box 程序与运行状态")
 	fmt.Fprintln(out, "风险评估：新版本可能存在兼容性变化，服务会重启")
+	fmt.Fprintln(out, "连接提醒：如果当前远程连接依赖本节点，重启期间会断开；建议使用服务商控制台或不依赖本节点的 SSH 执行")
 	fmt.Fprintln(out)
 	return confirmYesOrNo(in, out, "已取消更新 sing-box。")
 }
